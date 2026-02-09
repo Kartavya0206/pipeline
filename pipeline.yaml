@@ -1,0 +1,54 @@
+trigger: none   # Manual trigger only
+
+parameters:
+- name: modules
+  displayName: "Modules to fetch (comma-separated)"
+  type: string
+  default: "network,aks"
+
+resources:
+  repositories:
+    - repository: terraform-modules
+      type: github
+      name: rachita2901/Terraform-templates
+      endpoint: DevOps-demo
+      ref: refs/heads/main
+
+stages:
+- stage: Fetch_Modules
+  displayName: Fetch Selected Terraform Modules
+  jobs:
+  - job: Fetch
+    displayName: Copy Selected Modules
+    pool:
+      name: Windows-SelfHosted
+      demands:
+        - Agent.Name -equals testingvm
+
+    steps:
+    - checkout: terraform-modules
+      displayName: Checkout Terraform Modules Repo
+
+    - powershell: |
+        $modules = "$(modules)".Split(",")
+        $sourceRoot = "$(Build.SourcesDirectory)\Terraform-templates\modules"
+        $destinationRoot = "$(Build.SourcesDirectory)\selected-modules"
+
+        New-Item -ItemType Directory -Force -Path $destinationRoot | Out-Null
+
+        foreach ($module in $modules) {
+          $module = $module.Trim()
+          $sourcePath = Join-Path $sourceRoot $module
+          $destinationPath = Join-Path $destinationRoot $module
+
+          if (Test-Path $sourcePath) {
+            Write-Host "Copying module: $module"
+            Copy-Item -Path $sourcePath -Destination $destinationPath -Recurse -Force
+          } else {
+            Write-Error "Module '$module' does not exist in repository"
+            exit 1
+          }
+        }
+
+        Write-Host "Selected modules copied successfully."
+      displayName: Copy Selected Modules
