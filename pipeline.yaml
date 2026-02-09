@@ -11,7 +11,7 @@ resources:
     - repository: terraform-modules
       type: github
       name: rachita2901/Terraform-templates
-      endpoint: GitHub-Terraform-Templates   # GitHub service connection
+      endpoint: Kartavya0206   # GitHub service connection
       ref: refs/heads/main
 
 stages:
@@ -27,12 +27,14 @@ stages:
 
     steps:
     - checkout: terraform-modules
-      displayName: Checkout Terraform Modules Repository
+      displayName: Checkout Terraform Modules Repo
 
     - powershell: |
+        # Read pipeline parameter correctly
         $modules = "${{ parameters.modules }}".Split(",")
 
-        $sourceRoot = "$(Build.SourcesDirectory)\Terraform-templates\modules"
+        # IMPORTANT: Path after checkout
+        $sourceRoot = "$(Build.SourcesDirectory)\terraform-modules\modules"
         $destinationRoot = "$(Build.SourcesDirectory)\selected-modules"
 
         New-Item -ItemType Directory -Force -Path $destinationRoot | Out-Null
