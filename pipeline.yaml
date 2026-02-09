@@ -4,14 +4,14 @@ parameters:
 - name: modules
   displayName: "Modules to fetch (comma-separated)"
   type: string
-  default: "network,aks"
+  default: "network,compute"
 
 resources:
   repositories:
     - repository: terraform-modules
       type: github
       name: rachita2901/Terraform-templates
-      endpoint: Kartavya0206   # GitHub service connection
+      endpoint: Kartavya0206
       ref: refs/heads/main
 
 stages:
@@ -33,7 +33,7 @@ stages:
         # Read pipeline parameter correctly
         $modules = "${{ parameters.modules }}".Split(",")
 
-        # IMPORTANT: Path after checkout
+        #Correct path based on your repo structure
         $sourceRoot = "$(Build.SourcesDirectory)\terraform-modules\modules"
         $destinationRoot = "$(Build.SourcesDirectory)\selected-modules"
 
