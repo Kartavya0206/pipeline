@@ -11,7 +11,7 @@ resources:
     - repository: terraform-modules
       type: github
       name: rachita2901/Terraform-templates
-      endpoint: DevOps-demo
+      endpoint: Kartavya0206
       ref: refs/heads/main
 
 stages:
