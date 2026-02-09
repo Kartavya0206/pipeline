@@ -5,6 +5,10 @@ parameters:
   displayName: "Modules to fetch (comma-separated)"
   type: string
   default: "network,compute"
+- name: repoName
+  displayName: "Azure Repos Repository Name"
+  type: string
+  default: "terraform-selected-modules"
 
 resources:
   repositories:
@@ -26,33 +30,25 @@ stages:
         - Agent.Name -equals testingvm
 
     steps:
-    - checkout: self
-      persistCredentials: true
-      displayName: Checkout Azure Repos
-
     - checkout: terraform-modules
-      displayName: Checkout Terraform Modules Repo
+      displayName: Checkout Terraform Modules
 
     - powershell: |
         $modules = "${{ parameters.modules }}".Split(",")
         Write-Host "Modules to fetch: $($modules -join ', ')"
 
-        $sourceRoot = "$(Build.SourcesDirectory)\Terraform-templates\modules"
-        $destinationRoot = "$(Build.SourcesDirectory)\s\selected-modules"
+        $sourceRoot = "$(Build.SourcesDirectory)\modules"
+        $destinationRoot = "$(Build.SourcesDirectory)\selected-modules"
 
         if (-not (Test-Path $sourceRoot)) {
-            Write-Error "Modules directory not found at: $sourceRoot"
+            Write-Error "Modules directory not found"
             exit 1
         }
 
         Write-Host "`nAvailable modules:"
         Get-ChildItem $sourceRoot -Directory | ForEach-Object { Write-Host "  - $($_.Name)" }
 
-        # Create destination directory
         New-Item -ItemType Directory -Force -Path $destinationRoot | Out-Null
-
-        $failedModules = @()
-        $successModules = @()
 
         foreach ($module in $modules) {
           $module = $module.Trim()
@@ -60,93 +56,121 @@ stages:
           $destinationPath = Join-Path $destinationRoot $module
 
           if (Test-Path $sourcePath) {
-            Write-Host "`nCopying module: $module"
+            Write-Host "Copying module: $module"
             Copy-Item -Path $sourcePath -Destination $destinationPath -Recurse -Force
-            $successModules += $module
           } else {
-            Write-Warning "Module '$module' not found"
-            $failedModules += $module
-          }
-        }
-
-        Write-Host "`n=== Summary ==="
-        Write-Host "Successfully copied: $($successModules.Count) module(s)"
-        $successModules | ForEach-Object { Write-Host "  ✓ $_" }
-        
-        if ($failedModules.Count -gt 0) {
-            Write-Host "`nFailed: $($failedModules.Count) module(s)"
-            $failedModules | ForEach-Object { Write-Host "  ✗ $_" }
-            Write-Error "Some modules not found"
+            Write-Error "Module '$module' not found"
             exit 1
+          }
         }
 
         Write-Host "`n✓ Modules copied successfully"
       displayName: Copy Selected Modules
 
+    # NEW STEP: Create Azure Repos Repository if it doesn't exist
     - powershell: |
-        # Navigate to Azure Repos directory (self checkout)
-        Set-Location "$(Build.SourcesDirectory)\s"
-        
-        Write-Host "Current directory: $(Get-Location)"
-        Write-Host "Repository name: $(Build.Repository.Name)"
-
-        # Configure Git
-        git config user.email "azurepipeline@devops.com"
-        git config user.name "Azure Pipeline Bot"
-
-        # Get the Azure Repos URL with authentication token
+        $repoName = "${{ parameters.repoName }}"
         $orgUrl = "$(System.TeamFoundationCollectionUri)".TrimEnd('/')
         $project = "$(System.TeamProject)"
-        $repoName = "$(Build.Repository.Name)"
         $token = "$(System.AccessToken)"
         
-        # Encode the token for URL
+        # Create authorization header
         $base64Token = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$token"))
-        $azureReposUrl = "$orgUrl/$project/_git/$repoName"
+        $headers = @{
+            Authorization = "Basic $base64Token"
+            "Content-Type" = "application/json"
+        }
         
-        Write-Host "Azure Repos URL: $azureReposUrl"
-
-        # Set the remote to Azure Repos explicitly
-        git remote set-url origin $azureReposUrl
+        # Check if repository exists
+        $checkUrl = "$orgUrl/$project/_apis/git/repositories/$repoName`?api-version=7.0"
         
-        # Verify remote
-        Write-Host "`nConfigured remote:"
-        git remote -v
-
-        # Create a unique branch name
-        $branchName = "selected-modules-$(Build.BuildId)"
-        $modulesParam = "${{ parameters.modules }}"
+        Write-Host "Checking if repository '$repoName' exists..."
         
-        Write-Host "`nCreating branch: $branchName"
-        
-        # Create and checkout new branch
-        git checkout -b $branchName
-
-        # Add the selected modules
-        git add selected-modules/
-        
-        # Check if there are changes
-        $status = git status --porcelain
-        if ($status) {
-            Write-Host "`nCommitting changes..."
-            git commit -m "Pipeline: Added selected modules [$modulesParam]`n`nBuild ID: $(Build.BuildId)`nRequested modules: $modulesParam"
-            
-            Write-Host "`nPushing to Azure Repos..."
-            
-            # Use the -c credential helper to pass the token
-            $env:GIT_ASKPASS = "echo"
-            git -c http.extraheader="AUTHORIZATION: Basic $base64Token" push origin $branchName
-            
-            if ($LASTEXITCODE -eq 0) {
-                Write-Host "`n✓ Successfully pushed to branch: $branchName" -ForegroundColor Green
-                Write-Host "`nView in Azure Repos:"
-                Write-Host "$azureReposUrl?version=GB$branchName&path=/selected-modules" -ForegroundColor Cyan
-            } else {
-                Write-Error "Failed to push to Azure Repos"
+        try {
+            $existingRepo = Invoke-RestMethod -Uri $checkUrl -Headers $headers -Method Get -ErrorAction Stop
+            Write-Host "✓ Repository '$repoName' already exists" -ForegroundColor Green
+        }
+        catch {
+            if ($_.Exception.Response.StatusCode -eq 404) {
+                Write-Host "Repository not found. Creating new repository '$repoName'..." -ForegroundColor Yellow
+                
+                # Create repository
+                $createUrl = "$orgUrl/$project/_apis/git/repositories?api-version=7.0"
+                
+                $body = @{
+                    name = $repoName
+                    project = @{
+                        name = $project
+                    }
+                } | ConvertTo-Json
+                
+                try {
+                    $newRepo = Invoke-RestMethod -Uri $createUrl -Headers $headers -Method Post -Body $body
+                    Write-Host "✓ Repository '$repoName' created successfully!" -ForegroundColor Green
+                    Write-Host "Repository ID: $($newRepo.id)"
+                }
+                catch {
+                    Write-Error "Failed to create repository: $_"
+                    exit 1
+                }
+            }
+            else {
+                Write-Error "Error checking repository: $_"
                 exit 1
             }
+        }
+      displayName: Create Azure Repos Repository (if needed)
+      env:
+        SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+
+    # Push to the repository
+    - powershell: |
+        Set-Location "$(Build.SourcesDirectory)"
+        
+        Write-Host "Initializing Git repository..."
+        git init
+        
+        git config user.email "pipeline@azuredevops.com"
+        git config user.name "Azure Pipeline"
+        
+        # Build repository URL
+        $repoName = "${{ parameters.repoName }}"
+        $repoUrl = "https://dev.azure.com/SonuKumar0171/IFI-Terraform-Templates/_git/$repoName"
+        
+        Write-Host "Repository URL: $repoUrl"
+        
+        # Add remote
+        git remote add origin $repoUrl
+        
+        # Create branch
+        $branchName = "modules-$(Build.BuildId)"
+        git checkout -b $branchName
+        
+        # Add files
+        git add selected-modules/
+        
+        # Commit
+        Write-Host "`nCommitting changes..."
+        git commit -m "Pipeline Build $(Build.BuildId): Added modules ${{ parameters.modules }}"
+        
+        # Create auth token
+        $token = "$(System.AccessToken)"
+        $base64Token = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$token"))
+        
+        # Push
+        Write-Host "`nPushing to Azure Repos..."
+        git -c http.extraheader="AUTHORIZATION: Basic $base64Token" push origin $branchName
+        
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "`n========================================" -ForegroundColor Green
+            Write-Host "✓✓✓ SUCCESS! ✓✓✓" -ForegroundColor Green
+            Write-Host "========================================" -ForegroundColor Green
+            Write-Host "`nModules pushed to Azure Repos!" -ForegroundColor Cyan
+            Write-Host "`nView at:" -ForegroundColor Yellow
+            Write-Host "$repoUrl`?version=GB$branchName&path=/selected-modules"
         } else {
-            Write-Host "No changes to commit"
+            Write-Error "Push failed"
+            exit 1
         }
       displayName: Push to Azure Repos
       env:
