@@ -1,4 +1,4 @@
-trigger: none   # Manual trigger only
+trigger: none
 
 parameters:
 - name: modules
@@ -29,22 +29,24 @@ stages:
     - checkout: terraform-modules
       displayName: Checkout Terraform Modules Repo
 
+    # Checkout your Azure Repos repository
+    - checkout: self
+      persistCredentials: true
+      displayName: Checkout Azure Repos
+
     - powershell: |
-        # Read pipeline parameter
         $modules = "${{ parameters.modules }}".Split(",")
         Write-Host "Modules to fetch: $($modules -join ', ')"
 
-        # Correct path - directly under Build.SourcesDirectory
-        $sourceRoot = "$(Build.SourcesDirectory)\modules"
-        $destinationRoot = "$(Build.SourcesDirectory)\selected-modules"
+        $sourceRoot = "$(Build.SourcesDirectory)\Terraform-templates\modules"
+        $destinationRoot = "$(Build.SourcesDirectory)\s\selected-modules"
 
-        # Verify source directory exists
         if (-not (Test-Path $sourceRoot)) {
             Write-Error "Modules directory not found at: $sourceRoot"
             exit 1
         }
 
-        Write-Host "`nAvailable modules in repository:"
+        Write-Host "`nAvailable modules:"
         Get-ChildItem $sourceRoot -Directory | ForEach-Object { Write-Host "  - $($_.Name)" }
 
         # Create destination directory
@@ -63,21 +65,59 @@ stages:
             Copy-Item -Path $sourcePath -Destination $destinationPath -Recurse -Force
             $successModules += $module
           } else {
-            Write-Warning "Module '$module' does not exist at: $sourcePath"
+            Write-Warning "Module '$module' not found"
             $failedModules += $module
           }
         }
 
-        Write-Host "`n========== Summary =========="
+        Write-Host "`n=== Summary ==="
         Write-Host "Successfully copied: $($successModules.Count) module(s)"
         $successModules | ForEach-Object { Write-Host "  ✓ $_" }
         
         if ($failedModules.Count -gt 0) {
-            Write-Host "`nFailed to copy: $($failedModules.Count) module(s)"
+            Write-Host "`nFailed: $($failedModules.Count) module(s)"
             $failedModules | ForEach-Object { Write-Host "  ✗ $_" }
-            Write-Error "One or more modules could not be found"
+            Write-Error "Some modules not found"
             exit 1
         }
 
-        Write-Host "`nAll selected modules copied successfully to: $destinationRoot"
+        Write-Host "`n✓ Modules copied successfully"
       displayName: Copy Selected Modules
+
+    - powershell: |
+        # Navigate to Azure Repos directory
+        cd "$(Build.SourcesDirectory)\s"
+
+        # Configure Git
+        git config user.email "azurepipeline@devops.com"
+        git config user.name "Azure Pipeline Bot"
+
+        # Create a unique branch name
+        $branchName = "selected-modules-$(Build.BuildId)"
+        $modulesParam = "${{ parameters.modules }}"
+        
+        Write-Host "Creating branch: $branchName"
+        
+        # Create and checkout new branch
+        git checkout -b $branchName
+
+        # Check if there are changes
+        git add selected-modules/
+        
+        $status = git status --porcelain
+        if ($status) {
+            Write-Host "`nCommitting changes..."
+            git commit -m "Pipeline: Added selected modules [$modulesParam]`n`nBuild ID: $(Build.BuildId)`nRequested modules: $modulesParam`nBuild URL: $(System.TeamFoundationCollectionUri)$(System.TeamProject)/_build/results?buildId=$(Build.BuildId)"
+            
+            Write-Host "`nPushing to Azure Repos..."
+            git push origin $branchName
+            
+            Write-Host "`n✓ Successfully pushed to branch: $branchName"
+            Write-Host "`nView in Azure Repos:"
+            Write-Host "$(System.TeamFoundationCollectionUri)$(System.TeamProject)/_git/$(Build.Repository.Name)?version=GB$branchName&path=/selected-modules"
+        } else {
+            Write-Host "No changes to commit"
+        }
+      displayName: Push to Azure Repos
+      env:
+        SYSTEM_ACCESSTOKEN: $(System.AccessToken)
