@@ -8,7 +8,7 @@ parameters:
 - name: repoName
   displayName: "Azure Repos Repository Name"
   type: string
-  default: "terraform-selected-modules"
+  default: "demo-repos"
 
 resources:
   repositories:
@@ -67,11 +67,11 @@ stages:
         Write-Host "`n✓ Modules copied successfully"
       displayName: Copy Selected Modules
 
-    # NEW STEP: Create Azure Repos Repository if it doesn't exist
+    # FIXED: Create Azure Repos Repository
     - powershell: |
         $repoName = "${{ parameters.repoName }}"
         $orgUrl = "$(System.TeamFoundationCollectionUri)".TrimEnd('/')
-        $project = "$(System.TeamProject)"
+        $projectName = "$(System.TeamProject)"
         $token = "$(System.AccessToken)"
         
         # Create authorization header
@@ -81,36 +81,60 @@ stages:
             "Content-Type" = "application/json"
         }
         
-        # Check if repository exists
-        $checkUrl = "$orgUrl/$project/_apis/git/repositories/$repoName`?api-version=7.0"
+        Write-Host "Organization: $orgUrl"
+        Write-Host "Project: $projectName"
+        Write-Host "Repository: $repoName"
         
-        Write-Host "Checking if repository '$repoName' exists..."
+        # Step 1: Get the project ID
+        Write-Host "`nGetting project details..."
+        $projectUrl = "$orgUrl/_apis/projects/$projectName`?api-version=7.0"
+        
+        try {
+            $projectInfo = Invoke-RestMethod -Uri $projectUrl -Headers $headers -Method Get
+            $projectId = $projectInfo.id
+            Write-Host "✓ Project ID: $projectId"
+        }
+        catch {
+            Write-Error "Failed to get project info: $_"
+            exit 1
+        }
+        
+        # Step 2: Check if repository exists
+        $checkUrl = "$orgUrl/$projectName/_apis/git/repositories/$repoName`?api-version=7.0"
+        
+        Write-Host "`nChecking if repository '$repoName' exists..."
         
         try {
             $existingRepo = Invoke-RestMethod -Uri $checkUrl -Headers $headers -Method Get -ErrorAction Stop
             Write-Host "✓ Repository '$repoName' already exists" -ForegroundColor Green
+            Write-Host "Repository ID: $($existingRepo.id)"
         }
         catch {
             if ($_.Exception.Response.StatusCode -eq 404) {
                 Write-Host "Repository not found. Creating new repository '$repoName'..." -ForegroundColor Yellow
                 
-                # Create repository
-                $createUrl = "$orgUrl/$project/_apis/git/repositories?api-version=7.0"
+                # Step 3: Create repository with correct project ID
+                $createUrl = "$orgUrl/_apis/git/repositories?api-version=7.0"
                 
                 $body = @{
                     name = $repoName
                     project = @{
-                        name = $project
+                        id = $projectId
                     }
                 } | ConvertTo-Json
                 
+                Write-Host "`nRequest body:"
+                Write-Host $body
+                
                 try {
                     $newRepo = Invoke-RestMethod -Uri $createUrl -Headers $headers -Method Post -Body $body
-                    Write-Host "✓ Repository '$repoName' created successfully!" -ForegroundColor Green
+                    Write-Host "`n✓✓✓ Repository '$repoName' created successfully! ✓✓✓" -ForegroundColor Green
                     Write-Host "Repository ID: $($newRepo.id)"
+                    Write-Host "Repository URL: $($newRepo.webUrl)"
                 }
                 catch {
                     Write-Error "Failed to create repository: $_"
+                    Write-Error $_.Exception.Response
                     exit 1
                 }
             }
@@ -166,8 +190,9 @@ stages:
             Write-Host "✓✓✓ SUCCESS! ✓✓✓" -ForegroundColor Green
             Write-Host "========================================" -ForegroundColor Green
             Write-Host "`nModules pushed to Azure Repos!" -ForegroundColor Cyan
-            Write-Host "`nView at:" -ForegroundColor Yellow
+            Write-Host "`nView your modules at:" -ForegroundColor Yellow
             Write-Host "$repoUrl`?version=GB$branchName&path=/selected-modules"
+            Write-Host "`n========================================" -ForegroundColor Green
         } else {
             Write-Error "Push failed"
             exit 1
