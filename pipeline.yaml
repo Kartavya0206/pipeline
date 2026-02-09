@@ -30,14 +30,28 @@ stages:
       displayName: Checkout Terraform Modules Repo
 
     - powershell: |
-        # Read pipeline parameter correctly
+        # Read pipeline parameter
         $modules = "${{ parameters.modules }}".Split(",")
+        Write-Host "Modules to fetch: $($modules -join ', ')"
 
-        #Correct path based on your repo structure
-        $sourceRoot = "$(Build.SourcesDirectory)\terraform-modules\modules"
+        # Correct path - directly under Build.SourcesDirectory
+        $sourceRoot = "$(Build.SourcesDirectory)\modules"
         $destinationRoot = "$(Build.SourcesDirectory)\selected-modules"
 
+        # Verify source directory exists
+        if (-not (Test-Path $sourceRoot)) {
+            Write-Error "Modules directory not found at: $sourceRoot"
+            exit 1
+        }
+
+        Write-Host "`nAvailable modules in repository:"
+        Get-ChildItem $sourceRoot -Directory | ForEach-Object { Write-Host "  - $($_.Name)" }
+
+        # Create destination directory
         New-Item -ItemType Directory -Force -Path $destinationRoot | Out-Null
+
+        $failedModules = @()
+        $successModules = @()
 
         foreach ($module in $modules) {
           $module = $module.Trim()
@@ -45,13 +59,25 @@ stages:
           $destinationPath = Join-Path $destinationRoot $module
 
           if (Test-Path $sourcePath) {
-            Write-Host "Copying module: $module"
+            Write-Host "`nCopying module: $module"
             Copy-Item -Path $sourcePath -Destination $destinationPath -Recurse -Force
+            $successModules += $module
           } else {
-            Write-Error "Module '$module' does not exist in repository"
-            exit 1
+            Write-Warning "Module '$module' does not exist at: $sourcePath"
+            $failedModules += $module
           }
         }
 
-        Write-Host "Selected modules copied successfully."
+        Write-Host "`n========== Summary =========="
+        Write-Host "Successfully copied: $($successModules.Count) module(s)"
+        $successModules | ForEach-Object { Write-Host "  ✓ $_" }
+        
+        if ($failedModules.Count -gt 0) {
+            Write-Host "`nFailed to copy: $($failedModules.Count) module(s)"
+            $failedModules | ForEach-Object { Write-Host "  ✗ $_" }
+            Write-Error "One or more modules could not be found"
+            exit 1
+        }
+
+        Write-Host "`nAll selected modules copied successfully to: $destinationRoot"
       displayName: Copy Selected Modules
