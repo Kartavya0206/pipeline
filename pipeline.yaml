@@ -26,13 +26,12 @@ stages:
         - Agent.Name -equals testingvm
 
     steps:
-    - checkout: terraform-modules
-      displayName: Checkout Terraform Modules Repo
-
-    # Checkout your Azure Repos repository
     - checkout: self
       persistCredentials: true
       displayName: Checkout Azure Repos
+
+    - checkout: terraform-modules
+      displayName: Checkout Terraform Modules Repo
 
     - powershell: |
         $modules = "${{ parameters.modules }}".Split(",")
@@ -85,36 +84,67 @@ stages:
       displayName: Copy Selected Modules
 
     - powershell: |
-        # Navigate to Azure Repos directory
-        cd "$(Build.SourcesDirectory)\s"
+        # Navigate to Azure Repos directory (self checkout)
+        Set-Location "$(Build.SourcesDirectory)\s"
+        
+        Write-Host "Current directory: $(Get-Location)"
+        Write-Host "Repository name: $(Build.Repository.Name)"
 
         # Configure Git
         git config user.email "azurepipeline@devops.com"
         git config user.name "Azure Pipeline Bot"
 
+        # Get the Azure Repos URL with authentication token
+        $orgUrl = "$(System.TeamFoundationCollectionUri)".TrimEnd('/')
+        $project = "$(System.TeamProject)"
+        $repoName = "$(Build.Repository.Name)"
+        $token = "$(System.AccessToken)"
+        
+        # Encode the token for URL
+        $base64Token = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$token"))
+        $azureReposUrl = "$orgUrl/$project/_git/$repoName"
+        
+        Write-Host "Azure Repos URL: $azureReposUrl"
+
+        # Set the remote to Azure Repos explicitly
+        git remote set-url origin $azureReposUrl
+        
+        # Verify remote
+        Write-Host "`nConfigured remote:"
+        git remote -v
+
         # Create a unique branch name
         $branchName = "selected-modules-$(Build.BuildId)"
         $modulesParam = "${{ parameters.modules }}"
         
-        Write-Host "Creating branch: $branchName"
+        Write-Host "`nCreating branch: $branchName"
         
         # Create and checkout new branch
         git checkout -b $branchName
 
-        # Check if there are changes
+        # Add the selected modules
         git add selected-modules/
         
+        # Check if there are changes
         $status = git status --porcelain
         if ($status) {
             Write-Host "`nCommitting changes..."
-            git commit -m "Pipeline: Added selected modules [$modulesParam]`n`nBuild ID: $(Build.BuildId)`nRequested modules: $modulesParam`nBuild URL: $(System.TeamFoundationCollectionUri)$(System.TeamProject)/_build/results?buildId=$(Build.BuildId)"
+            git commit -m "Pipeline: Added selected modules [$modulesParam]`n`nBuild ID: $(Build.BuildId)`nRequested modules: $modulesParam"
             
             Write-Host "`nPushing to Azure Repos..."
-            git push origin $branchName
             
-            Write-Host "`n✓ Successfully pushed to branch: $branchName"
-            Write-Host "`nView in Azure Repos:"
-            Write-Host "$(System.TeamFoundationCollectionUri)$(System.TeamProject)/_git/$(Build.Repository.Name)?version=GB$branchName&path=/selected-modules"
+            # Use the -c credential helper to pass the token
+            $env:GIT_ASKPASS = "echo"
+            git -c http.extraheader="AUTHORIZATION: Basic $base64Token" push origin $branchName
+            
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "`n✓ Successfully pushed to branch: $branchName" -ForegroundColor Green
+                Write-Host "`nView in Azure Repos:"
+                Write-Host "$azureReposUrl?version=GB$branchName&path=/selected-modules" -ForegroundColor Cyan
+            } else {
+                Write-Error "Failed to push to Azure Repos"
+                exit 1
+            }
         } else {
             Write-Host "No changes to commit"
         }
