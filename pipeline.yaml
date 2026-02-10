@@ -5,10 +5,6 @@ parameters:
   displayName: "Modules to fetch (comma-separated)"
   type: string
   default: "network,compute"
-- name: repoName
-  displayName: "Azure Repos repository name (created if missing)"
-  type: string
-  default: "demo-repos"
 
 resources:
   repositories:
@@ -19,74 +15,6 @@ resources:
       ref: refs/heads/main
 
 stages:
-# Create Azure Repos repository if it doesn't exist (requires Build Service "Create repository" permission)
-- stage: Create_Repo
-  displayName: Create Azure Repos Repository (if needed)
-  jobs:
-  - job: CreateRepository
-    displayName: Ensure repository exists
-    pool:
-      name: Windows-SelfHosted
-      demands:
-        - Agent.Name -equals testingvm
-    steps:
-    - powershell: |
-        $orgUrl = "$(System.TeamFoundationCollectionUri)".TrimEnd('/')
-        $projectName = "$(System.TeamProject)"
-        $projectId = "$(System.TeamProjectId)"
-        $repoName = "${{ parameters.repoName }}"
-        $token = "$(System.AccessToken)"
-
-        Write-Host "Organization: $orgUrl"
-        Write-Host "Project: $projectName"
-        Write-Host "Repository: $repoName"
-        Write-Host ""
-
-        $base64Token = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$token"))
-        $headers = @{
-          Authorization = "Basic $base64Token"
-          "Content-Type" = "application/json"
-        }
-
-        Write-Host "Getting project details..."
-        $projectUrl = "$orgUrl/_apis/projects/$projectId`?api-version=7.1"
-        $project = Invoke-RestMethod -Uri $projectUrl -Headers $headers -Method Get
-        Write-Host "✓ Project ID: $($project.id)"
-        Write-Host ""
-
-        Write-Host "Checking if repository '$repoName' exists..."
-        $reposUrl = "$orgUrl/$projectName/_apis/git/repositories`?api-version=7.1"
-        $repos = Invoke-RestMethod -Uri $reposUrl -Headers $headers -Method Get
-        $existing = $repos.value | Where-Object { $_.name -eq $repoName }
-
-        if ($existing) {
-          Write-Host "✓ Repository '$repoName' already exists."
-          exit 0
-        }
-
-        Write-Host "Repository not found. Creating new repository '$repoName'..."
-        $createUrl = "$orgUrl/$projectName/_apis/git/repositories`?api-version=7.1"
-        $body = @{
-          name    = $repoName
-          project = @{ id = $projectId }
-        } | ConvertTo-Json
-
-        Write-Host ""
-        Write-Host "Request body:"
-        Write-Host $body
-
-        try {
-          $newRepo = Invoke-RestMethod -Uri $createUrl -Headers $headers -Method Post -Body $body
-          Write-Host "✓ Repository '$repoName' created successfully."
-        } catch {
-          Write-Error "Failed to create repository: $($_.Exception.Message)"
-          if ($_.ErrorDetails.Message) { Write-Host $_.ErrorDetails.Message }
-          exit 1
-        }
-      displayName: Create Azure Repos Repository (if needed)
-      env:
-        SYSTEM_ACCESSTOKEN: $(System.AccessToken)
-
 - stage: Fetch_Modules
   displayName: Fetch Selected Terraform Modules
   jobs:
@@ -113,7 +41,7 @@ stages:
             exit 1
         }
 
-        Write-Host "`nAvailable modules:"
+        Write-Host "`n Available modules:"
         Get-ChildItem $sourceRoot -Directory | ForEach-Object { Write-Host "  - $($_.Name)" }
 
         New-Item -ItemType Directory -Force -Path $destinationRoot | Out-Null
@@ -132,90 +60,9 @@ stages:
           }
         }
 
-        Write-Host "`n✓ Modules copied successfully"
+        Write-Host "`n Modules copied successfully"
       displayName: Copy Selected Modules
 
-    # FIXED: Create Azure Repos Repository
-    - powershell: |
-        $repoName = "${{ parameters.repoName }}"
-        $orgUrl = "$(System.TeamFoundationCollectionUri)".TrimEnd('/')
-        $projectName = "$(System.TeamProject)"
-        $token = "$(System.AccessToken)"
-        
-        # Create authorization header
-        $base64Token = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$token"))
-        $headers = @{
-            Authorization = "Basic $base64Token"
-            "Content-Type" = "application/json"
-        }
-        
-        Write-Host "Organization: $orgUrl"
-        Write-Host "Project: $projectName"
-        Write-Host "Repository: $repoName"
-        
-        # Step 1: Get the project ID
-        Write-Host "`nGetting project details..."
-        $projectUrl = "$orgUrl/_apis/projects/$projectName`?api-version=7.0"
-        
-        try {
-            $projectInfo = Invoke-RestMethod -Uri $projectUrl -Headers $headers -Method Get
-            $projectId = $projectInfo.id
-            Write-Host "✓ Project ID: $projectId"
-        }
-        catch {
-            Write-Error "Failed to get project info: $_"
-            exit 1
-        }
-        
-        # Step 2: Check if repository exists
-        $checkUrl = "$orgUrl/$projectName/_apis/git/repositories/$repoName`?api-version=7.0"
-        
-        Write-Host "`nChecking if repository '$repoName' exists..."
-        
-        try {
-            $existingRepo = Invoke-RestMethod -Uri $checkUrl -Headers $headers -Method Get -ErrorAction Stop
-            Write-Host "✓ Repository '$repoName' already exists" -ForegroundColor Green
-            Write-Host "Repository ID: $($existingRepo.id)"
-        }
-        catch {
-            if ($_.Exception.Response.StatusCode -eq 404) {
-                Write-Host "Repository not found. Creating new repository '$repoName'..." -ForegroundColor Yellow
-                
-                # Step 3: Create repository with correct project ID
-                $createUrl = "$orgUrl/_apis/git/repositories?api-version=7.0"
-                
-                $body = @{
-                    name = $repoName
-                    project = @{
-                        id = $projectId
-                    }
-                } | ConvertTo-Json
-                
-                Write-Host "`nRequest body:"
-                Write-Host $body
-                
-                try {
-                    $newRepo = Invoke-RestMethod -Uri $createUrl -Headers $headers -Method Post -Body $body
-                    Write-Host "`n✓✓✓ Repository '$repoName' created successfully! ✓✓✓" -ForegroundColor Green
-                    Write-Host "Repository ID: $($newRepo.id)"
-                    Write-Host "Repository URL: $($newRepo.webUrl)"
-                }
-                catch {
-                    Write-Error "Failed to create repository: $_"
-                    Write-Error $_.Exception.Response
-                    exit 1
-                }
-            }
-            else {
-                Write-Error "Error checking repository: $_"
-                exit 1
-            }
-        }
-      displayName: Create Azure Repos Repository (if needed)
-      env:
-        SYSTEM_ACCESSTOKEN: $(System.AccessToken)
-
-    # Push to the repository
     - powershell: |
         Set-Location "$(Build.SourcesDirectory)"
         
@@ -225,10 +72,13 @@ stages:
         git config user.email "pipeline@azuredevops.com"
         git config user.name "Azure Pipeline"
         
-        # Build repository URL
-        $repoName = "${{ parameters.repoName }}"
-        $repoUrl = "https://dev.azure.com/SonuKumar0171/IFI-Terraform-Templates/_git/$repoName"
+        # Use the repo where this pipeline runs (from pipeline context)
+        $repoName = "$(Build.Repository.Name)"
+        $baseUrl = "$(System.TeamFoundationCollectionUri)".TrimEnd('/')
+        $projectName = "$(System.TeamProject)"
+        $repoUrl = "$baseUrl/$projectName/_git/$repoName"
         
+        Write-Host "Target repository: $repoName"
         Write-Host "Repository URL: $repoUrl"
         
         # Add remote
@@ -255,7 +105,7 @@ stages:
         
         if ($LASTEXITCODE -eq 0) {
             Write-Host "`n========================================" -ForegroundColor Green
-            Write-Host "✓✓✓ SUCCESS! ✓✓✓" -ForegroundColor Green
+            Write-Host " SUCCESS! " -ForegroundColor Green
             Write-Host "========================================" -ForegroundColor Green
             Write-Host "`nModules pushed to Azure Repos!" -ForegroundColor Cyan
             Write-Host "`nView your modules at:" -ForegroundColor Yellow
