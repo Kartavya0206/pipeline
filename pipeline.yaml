@@ -5,6 +5,10 @@ parameters:
   displayName: "Modules to fetch (comma-separated)"
   type: string
   default: "network,compute"
+- name: azureReposName
+  displayName: "Azure Repos repository name (created if missing)"
+  type: string
+  default: "demo-repos"
 
 resources:
   repositories:
@@ -15,6 +19,74 @@ resources:
       ref: refs/heads/main
 
 stages:
+# Create Azure Repos repository if it doesn't exist (requires Build Service "Create repository" permission)
+- stage: Create_Repo
+  displayName: Create Azure Repos Repository (if needed)
+  jobs:
+  - job: CreateRepository
+    displayName: Ensure repository exists
+    pool:
+      name: Windows-SelfHosted
+      demands:
+        - Agent.Name -equals testingvm
+    steps:
+    - powershell: |
+        $orgUrl = "$(System.TeamFoundationCollectionUri)".TrimEnd('/')
+        $projectName = "$(System.TeamProject)"
+        $projectId = "$(System.TeamProjectId)"
+        $repoName = "${{ parameters.azureReposName }}"
+        $token = "$(System.AccessToken)"
+
+        Write-Host "Organization: $orgUrl"
+        Write-Host "Project: $projectName"
+        Write-Host "Repository: $repoName"
+        Write-Host ""
+
+        $base64Token = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$token"))
+        $headers = @{
+          Authorization = "Basic $base64Token"
+          "Content-Type" = "application/json"
+        }
+
+        Write-Host "Getting project details..."
+        $projectUrl = "$orgUrl/_apis/projects/$projectId`?api-version=7.1"
+        $project = Invoke-RestMethod -Uri $projectUrl -Headers $headers -Method Get
+        Write-Host "✓ Project ID: $($project.id)"
+        Write-Host ""
+
+        Write-Host "Checking if repository '$repoName' exists..."
+        $reposUrl = "$orgUrl/$projectName/_apis/git/repositories`?api-version=7.1"
+        $repos = Invoke-RestMethod -Uri $reposUrl -Headers $headers -Method Get
+        $existing = $repos.value | Where-Object { $_.name -eq $repoName }
+
+        if ($existing) {
+          Write-Host "✓ Repository '$repoName' already exists."
+          exit 0
+        }
+
+        Write-Host "Repository not found. Creating new repository '$repoName'..."
+        $createUrl = "$orgUrl/$projectName/_apis/git/repositories`?api-version=7.1"
+        $body = @{
+          name    = $repoName
+          project = @{ id = $projectId }
+        } | ConvertTo-Json
+
+        Write-Host ""
+        Write-Host "Request body:"
+        Write-Host $body
+
+        try {
+          $newRepo = Invoke-RestMethod -Uri $createUrl -Headers $headers -Method Post -Body $body
+          Write-Host "✓ Repository '$repoName' created successfully."
+        } catch {
+          Write-Error "Failed to create repository: $($_.Exception.Message)"
+          if ($_.ErrorDetails.Message) { Write-Host $_.ErrorDetails.Message }
+          exit 1
+        }
+      displayName: Create Azure Repos Repository (if needed)
+      env:
+        SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+
 - stage: Fetch_Modules
   displayName: Fetch Selected Terraform Modules
   jobs:
